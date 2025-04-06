@@ -13,6 +13,7 @@ from utils import *
 from action_utils import parse_action_args
 from trainer import Trainer
 from multi_processing import MultiProcessTrainer
+import wandb
 
 torch.utils.backcompat.broadcast_warning.enabled = True
 torch.utils.backcompat.keepdim_warning.enabled = True
@@ -108,10 +109,16 @@ parser.add_argument('--advantages_per_action', default=False, action='store_true
                     help='Whether to multipy log porb for each chosen action with advantages')
 parser.add_argument('--share_weights', default=False, action='store_true',
                     help='Share weights for hops')
+# Add wandb arguments to parser
+parser.add_argument('--wandb_run', type=str, default='debug',
+                   help='Weights & Biases run name')
 
 init_args_for_env(parser)
 args = parser.parse_args()
 
+# Initialize wandb
+wandb.init(project='bepal', config=args, name=f"{args.wandb_run}-{time.strftime('%Y%m%d-%H%M%S')}")
+wandb.config.update(args)  # Add all arguments to config
 
 device = torch.device('cuda:0' if torch.cuda.is_available else 'cpu')
 
@@ -182,6 +189,8 @@ else:
 
 if not args.display:
     display_models([policy_net])
+
+wandb.watch(policy_net, log='all', log_freq=10)
 
 # share parameters among threads, but not gradients
 for p in policy_net.parameters():
@@ -269,6 +278,22 @@ def run(num_epochs):
             print('value_loss: {}'.format(stat['value_loss']), flush=True)
         if 'value_loss_g' in stat.keys():
             print('gloable value loss: {}'.format(stat['value_loss_g']), flush=True)
+                # After printing metrics, add wandb logging
+        wandb.log({
+            'epoch': epoch,
+            'reward': np.mean(stat['reward']),
+            'enemy_reward': stat.get('enemy_reward', 0),
+            'success': stat.get('success', 0),
+            'steps_taken': stat.get('steps_taken', 0),
+            'comm_action': np.mean(stat.get('comm_action', 0)),
+            'map_loss': stat.get('map_loss', 0),
+            'loss': stat.get('loss', 0),
+            'action_loss': stat.get('action_loss', 0),
+            'value_loss': stat.get('value_loss', 0),
+            'value_loss_g': stat.get('value_loss_g', 0),
+            'entropy': stat.get('entropy', 0),
+            'learning_rate': trainer.scheduler.get_last_lr()[0]
+        }, step=epoch)
 
 
         if args.plot:
@@ -291,14 +316,20 @@ def run(num_epochs):
 
 def save(path):
     current_path =  os.path.abspath(os.path.dirname(os.path.abspath(__file__)) + os.path.sep + ".")
+    full_path = current_path + path
+    
     d = dict()
     d['policy_net'] = policy_net.state_dict()
     d['log'] = log
     d['trainer'] = trainer.state_dict()
 
-    print(current_path+path)
-    torch.save(d, current_path+path)
+    print(full_path)
+    torch.save(d, full_path+path)
     #torch.save(policy_net.mapdecode.state_dict(), path)
+
+    # Log model to wandb
+    wandb.save(full_path)  # Or use wandb.Artifact for more control
+    print(f"Saved model to {full_path} and logged to W&B")
 
 def load(path):
     current_path =  os.path.abspath(os.path.dirname(os.path.abspath(__file__)) + os.path.sep + ".")
@@ -339,6 +370,8 @@ if args.display:
 
 # if args.save != '':
 #     save(args.save)
+
+wandb.finish()
 
 if sys.flags.interactive == 0 and args.nprocesses > 1:
     trainer.quit()
