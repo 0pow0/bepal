@@ -112,6 +112,9 @@ parser.add_argument('--share_weights', default=False, action='store_true',
 # Add wandb arguments to parser
 parser.add_argument('--wandb_run', type=str, default='debug',
                    help='Weights & Biases run name')
+# Add communication value 
+parser.add_argument('--comm_baseline_path', type=str, default=None,
+                   help='Unlearned policy ckpt path w/o communication')
 
 init_args_for_env(parser)
 args = parser.parse_args()
@@ -174,7 +177,11 @@ print(args, flush=True)
 ''''''
 
 if args.commnet:
-     policy_net = CommNetMLP(args, num_inputs)#.to(device)
+    policy_net = CommNetMLP(args, num_inputs)#.to(device)
+    wocomm_baseline = CommNetMLP(args, num_inputs)
+    d = torch.load(args.comm_baseline_path)
+    wocomm_baseline.load_state_dict(d['policy_net'])
+     
      # d = torch.load('/home/qhuang/ppgcn/result/gcn_ppnode_agent_node_obs_12k_5994')
      # d = torch.load('/home/qhuang/decoder/result/model_tmc+map_7992')
      # log.clear()
@@ -199,7 +206,7 @@ for p in policy_net.parameters():
 if args.nprocesses > 1:
     trainer = MultiProcessTrainer(args, lambda: Trainer(args, policy_net, data.init(args.env_name, args)))
 else:
-    trainer = Trainer(args, policy_net, data.init(args.env_name, args))
+    trainer = Trainer(args, policy_net, data.init(args.env_name, args), wocomm_baseline)
 
 disp_trainer = Trainer(args, policy_net, data.init(args.env_name, args, False))
 disp_trainer.display = True
@@ -274,6 +281,8 @@ def run(num_epochs):
             print('loss: {}'.format(stat['loss']), flush=True)
         if 'action_loss' in stat.keys():
             print('action_loss: {}'.format(stat['action_loss']), flush=True)
+        if 'comm_loss' in stat.keys():
+            print('comm_loss: {}'.format(stat['comm_loss']), flush=True)
         if 'value_loss' in stat.keys():
             print('value_loss: {}'.format(stat['value_loss']), flush=True)
         if 'value_loss_g' in stat.keys():
@@ -289,6 +298,7 @@ def run(num_epochs):
             'map_loss': stat.get('map_loss', 0),
             'loss': stat.get('loss', 0),
             'action_loss': stat.get('action_loss', 0),
+            'comm_loss': stat.get('comm_loss', 0),
             'value_loss': stat.get('value_loss', 0),
             'value_loss_g': stat.get('value_loss_g', 0),
             'entropy': stat.get('entropy', 0),
@@ -351,18 +361,26 @@ if args.load != '':
     load(args.load)
 
 # freeze all layers
-for param in policy_net.parameters():
-    param.requires_grad = False
+# for param in policy_net.parameters():
+    # param.requires_grad = False
+
 # 解冻 heads[1] 的参数
-for param in policy_net.heads[1].parameters():
-    param.requires_grad = True
-for param in policy_net.value_head.parameters():
-    param.requires_grad = True
-# for param in policy_net.value_global.parameters():
-#     param.requires_grad = True
+# for param in policy_net.heads[1].parameters():
+    # param.requires_grad = True
+# for param in policy_net.value_head.parameters():
+    # param.requires_grad = True
+
+# freeze all layers of w/o communication policy
+for param in wocomm_baseline.parameters():
+    param.requires_grad = False
+
+print("Policy parameters:")
 for name, param in policy_net.named_parameters():
     print(f"{name}: {param.requires_grad}")
-# exit()
+
+print("\nW/o comm baseline parameters:")
+for name, param in wocomm_baseline.named_parameters():
+    print(f"{name}: {param.requires_grad}")
 
 run(args.num_epochs)
 if args.display:
