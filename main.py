@@ -274,6 +274,8 @@ def run(num_epochs):
             print('loss: {}'.format(stat['loss']), flush=True)
         if 'action_loss' in stat.keys():
             print('action_loss: {}'.format(stat['action_loss']), flush=True)
+        if 'comm_loss' in stat.keys():
+            print('comm_loss: {}'.format(stat['comm_loss']), flush=True)
         if 'value_loss' in stat.keys():
             print('value_loss: {}'.format(stat['value_loss']), flush=True)
         if 'value_loss_g' in stat.keys():
@@ -289,6 +291,7 @@ def run(num_epochs):
             'map_loss': stat.get('map_loss', 0),
             'loss': stat.get('loss', 0),
             'action_loss': stat.get('action_loss', 0),
+            'comm_loss': stat.get('comm_loss', 0),
             'value_loss': stat.get('value_loss', 0),
             'value_loss_g': stat.get('value_loss_g', 0),
             'entropy': stat.get('entropy', 0),
@@ -324,7 +327,7 @@ def save(path):
     d['trainer'] = trainer.state_dict()
 
     print(full_path)
-    torch.save(d, full_path+path)
+    torch.save(d, full_path)
     #torch.save(policy_net.mapdecode.state_dict(), path)
 
     # Log model to wandb
@@ -353,8 +356,11 @@ if args.load != '':
 # freeze all layers
 for param in policy_net.parameters():
     param.requires_grad = False
-# 解冻 heads[1] 的参数
+# 解冻 Communication policy heads[1] 的参数
 for param in policy_net.heads[1].parameters():
+    param.requires_grad = True
+# 解冻 Action policy heads[0] 的参数
+for param in policy_net.heads[0].parameters():
     param.requires_grad = True
 for param in policy_net.value_head.parameters():
     param.requires_grad = True

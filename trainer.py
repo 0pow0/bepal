@@ -376,14 +376,19 @@ class Trainer(object):
 
 
         if self.args.advantages_per_action:
-            action_loss = -advantages.view(-1).unsqueeze(-1) * log_prob
-            action_loss *= alive_masks.unsqueeze(-1)
+            # action_loss = -advantages.view(-1).unsqueeze(-1) * log_prob
+            action_loss = -advantages.view(-1) * log_prob[:, 0]
+            action_loss *= alive_masks
+            comm_loss = -advantages.view(-1) * log_prob[:, 1]
+            comm_loss *= alive_masks
         else:
             action_loss = -advantages.view(-1) * log_prob.squeeze()
             action_loss *= alive_masks
 
         action_loss = action_loss.sum()
         stat['action_loss'] = action_loss.item()
+        comm_loss = comm_loss.sum()
+        stat['comm_loss'] = comm_loss.item()
 
         # value loss term
         targets = returns
@@ -419,7 +424,7 @@ class Trainer(object):
         stat['loss'] = loss.item()
         # loss.backward()
         # (-loss).backward()
-        (-action_loss + self.args.value_coeff * (value_loss)).backward()
+        (action_loss - comm_loss + self.args.value_coeff * (value_loss)).backward()
 
         return stat
 
