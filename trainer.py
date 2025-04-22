@@ -402,8 +402,9 @@ class Trainer(object):
 
         action_loss = action_loss.sum()
         stat['action_loss'] = action_loss.item()
-        comm_loss = comm_loss.sum()
-        stat['comm_loss'] = comm_loss.item()
+        if self.args.advantages_per_action:
+            comm_loss = comm_loss.sum()
+            stat['comm_loss'] = comm_loss.item()
 
         # value loss term
         targets = returns
@@ -423,7 +424,10 @@ class Trainer(object):
 
         map_loss = (map_loss_m0 ) # Feb setting  +n+1+9   +ng +ng     /(n+1)**2     /((n+1)*(2))  /n
         stat['map_loss'] = (map_loss).item()
-        loss = action_loss + comm_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
+        if self.args.advantages_per_action:
+            loss = action_loss + comm_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
+        else:
+            loss = action_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
 
 
         if not self.args.continuous:
