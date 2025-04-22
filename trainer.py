@@ -408,7 +408,8 @@ class Trainer(object):
 
         map_loss = (map_loss_m0 ) # Feb setting  +n+1+9   +ng +ng     /(n+1)**2     /((n+1)*(2))  /n
         stat['map_loss'] = (map_loss).item()
-        loss = action_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
+        #loss = action_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
+        loss = action_loss + comm_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
 
 
         if not self.args.continuous:
@@ -422,9 +423,9 @@ class Trainer(object):
 
 
         stat['loss'] = loss.item()
-        # loss.backward()
+        loss.backward()
         # (-loss).backward()
-        (action_loss - comm_loss + self.args.value_coeff * (value_loss)).backward()
+        # (action_loss - comm_loss + self.args.value_coeff * (value_loss)).backward()
 
         return stat
 
