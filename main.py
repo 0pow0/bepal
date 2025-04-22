@@ -361,6 +361,7 @@ if args.load != '':
     load(args.load)
 
 # freeze all layers
+<<<<<<< HEAD
 # for param in policy_net.parameters():
     # param.requires_grad = False
 
@@ -375,6 +376,20 @@ for param in wocomm_baseline.parameters():
     param.requires_grad = False
 
 print("Policy parameters:")
+=======
+for param in policy_net.parameters():
+    param.requires_grad = False
+# 解冻 Communication policy heads[1] 的参数
+for param in policy_net.heads[1].parameters():
+    param.requires_grad = True
+# 解冻 Action policy heads[0] 的参数
+for param in policy_net.heads[0].parameters():
+    param.requires_grad = True
+for param in policy_net.value_head.parameters():
+    param.requires_grad = True
+# for param in policy_net.value_global.parameters():
+#     param.requires_grad = True
+>>>>>>> main
 for name, param in policy_net.named_parameters():
     print(f"{name}: {param.requires_grad}")
 
