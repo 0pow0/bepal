@@ -334,7 +334,7 @@ def save(path):
     d['trainer'] = trainer.state_dict()
 
     print(full_path)
-    torch.save(d, full_path+path)
+    torch.save(d, full_path)
     #torch.save(policy_net.mapdecode.state_dict(), path)
 
     # Log model to wandb
@@ -365,8 +365,8 @@ if args.load != '':
     # param.requires_grad = False
 
 # 解冻 heads[1] 的参数
-# for param in policy_net.heads[1].parameters():
-    # param.requires_grad = True
+# for param in policy_net.heads[0].parameters():
+    # param.requires_grad = False 
 # for param in policy_net.value_head.parameters():
     # param.requires_grad = True
 
