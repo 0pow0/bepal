@@ -361,14 +361,16 @@ if args.load != '':
     load(args.load)
 
 # freeze all layers
-# for param in policy_net.parameters():
-    # param.requires_grad = False
+for param in policy_net.parameters():
+    param.requires_grad = False
 
-# 解冻 heads[1] 的参数
-# for param in policy_net.heads[0].parameters():
-    # param.requires_grad = False 
-# for param in policy_net.value_head.parameters():
-    # param.requires_grad = True
+# 解冻 heads 的参数
+for param in policy_net.heads[0].parameters():
+    param.requires_grad = True 
+for param in policy_net.heads[1].parameters():
+    param.requires_grad = True 
+for param in policy_net.value_head.parameters():
+    param.requires_grad = True
 
 # freeze all layers of w/o communication policy
 for param in wocomm_baseline.parameters():

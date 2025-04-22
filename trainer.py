@@ -392,9 +392,9 @@ class Trainer(object):
 
 
         if self.args.advantages_per_action:
-            action_loss = -advantages.contiguous().view(-1).unsqueeze(-1) * log_prob[:, 0]
+            action_loss = -wocomm_td_delta.contiguous().view(-1).unsqueeze(-1) * log_prob[:, 0]
             action_loss *= alive_masks.unsqueeze(-1)
-            comm_loss = -advantages.contiguous().view(-1).unsqueeze(-1) * log_prob[:, 1]
+            comm_loss = -(advantages - wocomm_td_delta).contiguous().view(-1).unsqueeze(-1) * log_prob[:, 1]
             comm_loss *= alive_masks.unsqueeze(-1)
         else:
             action_loss = -advantages.view(-1) * log_prob.squeeze()
