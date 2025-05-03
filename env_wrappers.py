@@ -56,14 +56,14 @@ class GymWrapper(object):
     def reset(self, epoch):
         reset_args = getargspec(self.env.reset).args
         if 'epoch' in reset_args:
-            obs = self.env.reset(epoch)
+            obs, action_mask = self.env.reset(epoch)
         else:
-            obs = self.env.reset()
+            obs, action_mask = self.env.reset()
 
-        #obs = self._flatten_obs(obs) #for conv
-        obs = np.expand_dims(obs, 0)
-        obs = torch.from_numpy(obs).double()
-        return obs
+        obs = self._flatten_obs(obs) #for conv
+        #obs = np.expand_dims(obs, 0)
+        #obs = torch.from_numpy(obs).double()
+        return obs, action_mask
 
     def display(self):
         self.env.render()
@@ -75,11 +75,11 @@ class GymWrapper(object):
     def step(self, action):
         # TODO: Modify all environments to take list of action
         # instead of doing this
-        #if self.dim_actions == 1:
-        #    action = action[0]
-        obs, r, done, info = self.env.step(action)
+        if self.dim_actions == 1:
+            action = action[0]
+        obs, action_mask, r, done, info = self.env.step(action)
         obs = self._flatten_obs(obs)
-        return (obs, r, done, info)
+        return (obs, action_mask, r, done, info)
 
     def reward_terminal(self):
         if hasattr(self.env, 'reward_terminal'):
@@ -98,7 +98,7 @@ class GymWrapper(object):
             obs = np.stack(_obs)
 
         obs = obs.reshape(1, -1, self.observation_dim)
-        obs = np.expand_dims(obs, 0)
+        #obs = np.expand_dims(obs, 0)
         obs = torch.from_numpy(obs).double()
         return obs
 

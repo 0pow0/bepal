@@ -9,42 +9,43 @@ from utils import *
 from action_utils import *
 
 Transition = namedtuple('Transition', ('state', 'action', 'action_out', 'value', 'value_global', 'episode_mask', 'episode_mini_mask', 'next_state',
-                                       'reward', 'misc', 'node_ground_truthg', 'edge_ground_truthg', 'location', 'node_decoded', 'edge_decoded', 'wocomm_value', 'next_wocomm_value'))#'l0','l1','l2''maploss' 'grid_maploss',
+                                       'reward', 'misc', 'node_ground_truthg', 'location', 'node_decoded', 'gt_info', 'cnn_decoded'))#'l0','l1','l2''maploss' 'grid_maploss',
 
 '''
 Dyanamic Graph version trainer
 '''
+def downsample_map(map_tensor, target_size=10):
+    """
+    Smooth downsampling using avg_pool2d from (T, N, C, H, W) to (T, N, C, target_size, target_size)
+    """
+    T, N, C, H, W = map_tensor.shape
+
+    # Flatten for pooling
+    x = map_tensor.reshape(T * N * C, 1, H, W)
+
+    # Compute kernel and stride to reach exactly 10×10 from 12×12
+    kernel_h = H - (target_size - 1)
+    kernel_w = W - (target_size - 1)
+
+    # Apply average pooling
+    x_pooled = F.avg_pool2d(x, kernel_size=(kernel_h, kernel_w), stride=1)
+
+    # Reshape back
+    return x_pooled.view(T, N, C, target_size, target_size)
+
+
 class Trainer(object):
-    def __init__(self, args, policy_net,  env, wocomm_baseline=None):
+    def __init__(self, args, policy_net,  env):
         self.args = args
         self.policy_net = policy_net
         self.env = env
         self.display = False
         self.last_step = False
-        # self.optimizer = optim.RMSprop(policy_net.parameters(),
-            # lr = args.lrate, alpha=0.97, eps=1e-6)
         self.optimizer = optim.RMSprop(filter(lambda p: p.requires_grad, policy_net.parameters()),
             lr = args.lrate, alpha=0.97, eps=1e-6)
-        # self.params = [p for p in self.policy_net.parameters()]
-        self.params = [p for p in self.policy_net.heads[1].parameters()]
-        self.params.extend([p for p in self.policy_net.value_head.parameters()])
-        # self.params.extend([p for p in self.policy_net.value_global.parameters()])
+        self.params = [p for p in self.policy_net.parameters()]
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=40000, gamma=1)
         #self.device = torch.device('cpu') #'cuda:0' if torch.cuda.is_available else
-
-        # add unlearned value baseline for w/o communication scenario
-        self.wocomm_baseline = wocomm_baseline
-
-    def blur(self, gt, decode):
-        for i in range(self.args.nagents):
-            for j in range(self.args.nagents+1):
-                x = abs(gt[i][j][0] - decode[i][j][0])
-                y = abs(gt[i][j][1] - decode[i][j][1])
-                if x+y <= 2:
-                #if x <= self.env.env.vision / (self.env.env.dim -1) and y <= self.env.env.vision / (self.env.env.dim -1):
-                    gt[i][j][0] = decode[i][j][0]
-                    gt[i][j][1] = decode[i][j][1]
-        return gt
 
     
     def ground_truth_gen(self, env):
@@ -80,74 +81,16 @@ class Trainer(object):
                 adj[self.args.nagents+1+i, :] = -1
                 adj[:, self.args.nagents + 1 + i] = -1
         '''
-        return node_ground_truth[:self.args.nagents+1, :2], adj[:self.args.nagents+1, :self.args.nagents+1], torch.Tensor(nodes_org[:self.args.nagents+1,:])  #
+        return node_ground_truth[:self.args.nagents+1, :2], torch.Tensor(nodes_org[:self.args.nagents+1,:])  #
 
-    def state2graph(self, env):
-        node_matrix=[]
-        nodes_org = np.concatenate((env.predator_loc,env.prey_loc,env.grid_loc),axis=0)
-        adj = [np.zeros( (len(nodes_org), len(nodes_org)))]*len(nodes_org)
-        for i,j in enumerate(nodes_org[:self.args.nagents+1]):
-            clm = np.zeros(len(nodes_org))
-            id = np.zeros((len(nodes_org),len(nodes_org)))
-            obs = np.zeros([len(nodes_org), self.args.vision * 2 + 1, self.args.vision * 2 + 1])
-            obs[i] = self.setmargin(obs[i], j)
-            for x,y in enumerate(nodes_org):
-                if i==x:
-                    clm[x] = 1
-                    adj[i][i][x] = 1
-                    obs[x][self.args.vision][self.args.vision]=1
-                else:
-                    if abs(j[0]-y[0])<=1 and abs(j[1]-y[1])<=1:
-                        obs[i][self.args.vision+y[0]-j[0]][self.args.vision+y[1]-j[1]]=1
-                        obs[x][self.args.vision + j[0]-y[0]][self.args.vision + j[1]-y[1]] = 1
-                        obs[x][self.args.vision][self.args.vision] = 1
-                        clm[x] = 1
-                        adj[i][i][x] = 1
-                        adj[i][x][i] = 1
-                    else:
-                        clm[x] = 0
-                id[x][x] = 1
-            obs_flatten = obs.reshape([len(nodes_org), (self.args.vision * 2 + 1)*(self.args.vision * 2 + 1)])
-            obstacle_id = np.concatenate((np.zeros([self.args.nagents+1,1]), np.ones([len(nodes_org)-self.args.nagents-1,1])), axis=0)
-            obs_flatten[self.args.nagents+1:, :] = -1
-            id = np.concatenate((id[:, :self.args.nagents+1], obstacle_id), axis=1)
-            node_before_mask = np.concatenate((nodes_org, id, obs_flatten), axis=1)
-            # node_before_mask = np.concatenate((nodes_org, id, np.ones([len(nodes_org), 1])), axis=1)
-            # mask = np.expand_dims(clm, axis=1).repeat(node_before_mask.shape[1], axis=1)
-            node = np.delete(node_before_mask, np.where(clm==0)[0],axis=0)
-            adj[i] = np.delete(adj[i], np.where(clm==0)[0],axis=0)
-            adj[i] = np.delete(adj[i], np.where(clm == 0)[0], axis=1)
-            adj[i] = torch.tensor(adj[i])
-            main_idx = -1
-            if i!= len(nodes_org)-(1+len(env.grid_loc)):
-                for idx in range(node.shape[0]):
-                    if (node[:,2:2+self.args.nagents+1+1]==id[i]).all():
-                        main_idx = idx
-                node_matrix.append((torch.tensor(node), main_idx))
-        return node_matrix, adj[:self.args.nagents]
-
-    def setmargin(self, obs, pos):
-        if self.args.vision-pos[0]>0:
-            for i in range(self.args.vision-pos[0]):
-                obs[i,:] = -1
-        if self.args.vision-pos[1]>0:
-            for j in range(self.args.vision-pos[1]):
-                obs[:, j] = -1
-        if self.args.vision+pos[0]>self.args.dim-1:
-            for i in range(self.args.vision+pos[0]-self.args.dim+1):
-                obs[-1-i,:] = -1
-        if self.args.vision+pos[1]>self.args.dim-1:
-            for j in range(self.args.vision+pos[1]-self.args.dim+1):
-                obs[:, -1-j] = -1
-        return obs
 
     def get_episode(self, epoch):
         episode = []
         reset_args = getargspec(self.env.reset).args
         if 'epoch' in reset_args:
-            state = self.env.reset(epoch)
+            state, action_mask = self.env.reset(epoch)
         else:
-            state = self.env.reset()
+            state, action_mask = self.env.reset()
         should_display = self.display and self.last_step
 
         if should_display:
@@ -157,7 +100,7 @@ class Trainer(object):
         switch_t = -1
 
         prev_hid = torch.zeros(1, self.args.nagents, self.args.hid_size)
-        obs_layer = np.zeros([ self.env.env.true.shape[1], self.env.env.true.shape[2]])
+
         for t in range(self.args.max_steps):
             misc = dict()
             if t == 0 and self.args.hard_attn and self.args.commnet:
@@ -168,12 +111,11 @@ class Trainer(object):
                 if self.args.rnn_type == 'LSTM' and t == 0:
                     prev_hid = self.policy_net.init_hidden(batch_size=state.shape[0])
                 # change x to graph as
-                node, adj = self.state2graph(self.env.env)
-                x = [node, adj, prev_hid]
-                action_out, value, value_global, prev_hid, node_decoded, edge_decoded = self.policy_net(x, info) #, grid_decoded
+                # node, adj = self.state2graph(self.env.env)
+                # x = [node, adj, prev_hid]
 
-                # state value w/o comm
-                wocomm_value = self.wocomm_baseline(x, info)[1] #, grid_decoded
+                x = [state, prev_hid]
+                action_out, value, value_global, prev_hid, node_decoded, cnn_decoded = self.policy_net(x, info) #, grid_decoded
 
                 if (t + 1) % self.args.detach_gap == 0:
                     if self.args.rnn_type == 'LSTM':
@@ -188,24 +130,17 @@ class Trainer(object):
             action, actual = translate_action(self.args, self.env, action)
 
             node_decoded = node_decoded.view(self.args.nagents, self.args.nagents+1, (4)) # +9   +2 +self.args.nagents+1+1
-            edge_decoded = edge_decoded.view(self.args.nagents, self.args.nagents+1, self.args.nagents+1) #+self.env.env.ngrid
             
-            node_gt, edge_gt, location = self.ground_truth_gen(self.env.env)
-            obs_layer = obs_layer + self.env.env.true[2, :, :]
-            obs_layer[obs_layer > 0] = 1
-            self.env.env.true[2, :, :] = obs_layer
+
+            node_gt, location = self.ground_truth_gen(self.env.env)
             
             
             node_ground_truthg = torch.tensor(node_gt[np.newaxis].repeat(self.args.nagents, axis=0))
-            edge_ground_truthg = torch.tensor(edge_gt[np.newaxis].repeat(self.args.nagents, axis=0))
-            #node_ground_truthg = self.blur(node_ground_truthg, node_decoded)
-            #Loss_func = nn.MSELoss(reduction='sum')
-            #node_maploss = Loss_func(node_decoded, node_ground_truthg.detach())
-            #edge_maploss = Loss_func(edge_decoded, edge_ground_truthg.detach())
+
+            gt_info =  torch.Tensor(np.concatenate((self.env.env.obstacle_grid[np.newaxis], self.env.env.self_explored, self.env.env.others_explored), axis=0))
             
-            next_state, reward, done, info = self.env.step(actual)
-            next_state = next_state.squeeze().view(1, self.args.nagents, 4, self.args.dim, self.args.dim)
-            # store comm_action in info for next step
+            next_state, action_mask, reward, done, info = self.env.step(actual)
+
             if self.args.hard_attn and self.args.commnet:
                 info['comm_action'] = action[-1] if not self.args.comm_action_one else np.ones(self.args.nagents, dtype=int)
 
@@ -213,10 +148,6 @@ class Trainer(object):
                 if hasattr(self.args, 'enemy_comm') and self.args.enemy_comm:
                     stat['enemy_comm']  = stat.get('enemy_comm', 0)  + info['comm_action'][self.args.nfriendly:]
 
-            # next state value w/o comm
-            next_node, next_adj = self.state2graph(self.env.env)
-            next_x = [next_node, next_adj, prev_hid]
-            next_wocomm_value = self.wocomm_baseline(next_x, info)[1]
 
             if 'alive_mask' in info:
                 misc['alive_mask'] = info['alive_mask'].reshape(reward.shape)
@@ -245,8 +176,7 @@ class Trainer(object):
                 self.env.display()
 
 
-            trans = Transition(state, action, action_out, value, value_global, episode_mask, episode_mini_mask, next_state, reward, misc, node_ground_truthg, edge_ground_truthg, location, node_decoded, edge_decoded,
-                               wocomm_value, next_wocomm_value)
+            trans = Transition(state, action, action_out, value, value_global, episode_mask, episode_mini_mask, next_state, reward, misc, node_ground_truthg,  location, node_decoded, gt_info, cnn_decoded)
             # trans = Transition(state, action, action_out, value, episode_mask, episode_mini_mask, next_state, reward, misc, maploss) grid_maploss,
 
             episode.append(trans)
@@ -329,51 +259,42 @@ class Trainer(object):
 
 
         node_decoded = torch.stack(batch.node_decoded, dim=0)
-        edge_decoded = torch.stack(batch.edge_decoded, dim=0)
+        cnn_decoded = torch.stack(batch.cnn_decoded, dim=0)
+        map_gt_info = torch.stack(batch.gt_info)
+        real_gt = torch.cat(
+            [map_gt_info[:, 0:1, :, :].unsqueeze(1).expand(rewards.size(0), n, 1, self.args.dim, self.args.dim),
+             map_gt_info[:, 1:6, :, :].view(rewards.size(0), n, 1, self.args.dim, self.args.dim),
+             map_gt_info[:, 6:, :, :].view(rewards.size(0), n, 1, self.args.dim, self.args.dim)], dim=2)
+        final_gt_downsampled = downsample_map(real_gt, target_size=10)
+        layerwise_loss = F.mse_loss(cnn_decoded, final_gt_downsampled, reduction='none')
+        cnn_loss = layerwise_loss.sum()
+
         node_loc = torch.stack(batch.node_ground_truthg, dim=0)
-        edge_gt = torch.stack(batch.edge_ground_truthg, dim=0)
+
         location = torch.stack(batch.location, dim=0)
         vector = torch.zeros((rewards.size(0), 1, rewards.size(1)+1, 2))
-        vector2 = torch.zeros((rewards.size(0), 1, rewards.size(1)+1, 2))
         for i in reversed(range(rewards.size(0))):
+            scale_factor = 5 #(self.args.dim-1)
             advantages[i] = returns[i] - values.data[i]
-            scale_factor = self.args.dim-1#5 
-            if i >= rewards.size(0)-1:
 
-                vector[i][0] = location[-1]/(scale_factor)- location[i]/(scale_factor)
-            else:
-                contains_zero_row = torch.all(episode_masks[i:i+1]==episode_masks[-1], dim=1)
-                if contains_zero_row.any():
-                    index = contains_zero_row.nonzero(as_tuple=True)[0][0].item()
-                    vector[i][0] = location[i+index]/(scale_factor) - location[i]/(scale_factor)
-                else:
-                    vector[i][0] = location[i + 1] / (scale_factor) - location[i] / (scale_factor)
-            
             if i >= rewards.size(0)-5:
 
-                vector2[i][0] = location[-1]/(scale_factor)- location[i]/(scale_factor)
+                vector[i][0] = location[-1]/scale_factor- location[i]/scale_factor
             else:
                 contains_zero_row = torch.all(episode_masks[i:i+5]==episode_masks[-1], dim=1)
                 if contains_zero_row.any():
                     index = contains_zero_row.nonzero(as_tuple=True)[0][0].item()
-                    vector2[i][0] = location[i+index]/(scale_factor) - location[i]/(scale_factor)
+                    vector[i][0] = location[i+index]/scale_factor - location[i]/scale_factor
                 else:
-                    vector2[i][0] = location[i + 5] / (scale_factor) - location[i] / (scale_factor)
-            ''''''
+                    vector[i][0] = location[i + 5] / scale_factor - location[i] / scale_factor
+
         #decode_flag = torch.any(actions[:, :, 1] == 1, dim=1)
         vector = vector.repeat(1, n, 1, 1)
-        vector2 = vector2.repeat(1, n, 1, 1)
-        node_gt = torch.cat((node_loc,vector2), 3)#node_loc vector
+        node_gt = torch.cat((node_loc,vector), 3)#node_loc
         Loss_func = nn.MSELoss(reduction='sum') #none
         node_maploss = Loss_func(node_decoded, node_gt.detach())#.sum(dim=[1,2, 3]) /((n+1)*2)
-        #edge_maploss = Loss_func(edge_decoded, edge_gt.detach())#/((n+1)**2)
-        map_loss_m0 = node_maploss#(*decode_flag.float()).sum()
-        #map_loss_m1 = edge_maploss
 
-        wocomm_values = torch.cat(batch.wocomm_value, dim=0).view(batch_size, n)
-        next_wocomm_values = torch.cat(batch.next_wocomm_value, dim=0).view(batch_size, n)
-        wocomm_td_target = rewards + self.args.gamma * next_wocomm_values * episode_masks
-        wocomm_td_delta = wocomm_td_target - wocomm_values
+        map_loss_m0 = node_maploss
 
         if self.args.normalize_rewards:
             advantages = (advantages - advantages.mean()) / advantages.std()
@@ -382,7 +303,7 @@ class Trainer(object):
             action_means, action_log_stds, action_stds = action_out
             log_prob = normal_log_density(actions, action_means, action_log_stds, action_stds)
         else:
-            log_p_a = [action_out[i].view(-1, num_actions[i]) for i in range(dim_actions)] # [(B * N, A), (B * A, C)] A: aciton space, C: communication space
+            log_p_a = [action_out[i].view(-1, num_actions[i]) for i in range(dim_actions)] # [(B * N, A), (B * N, C)] A: aciton space, C: communication space
             actions = actions.contiguous().view(-1, dim_actions) # (B * N, 2)
 
             if self.args.advantages_per_action:
@@ -392,10 +313,10 @@ class Trainer(object):
 
 
         if self.args.advantages_per_action:
-            action_loss = -wocomm_td_delta.contiguous().view(-1).unsqueeze(-1) * log_prob[:, 0]
-            action_loss *= alive_masks.unsqueeze(-1)
-            comm_loss = -(advantages - wocomm_td_delta).contiguous().view(-1).unsqueeze(-1) * log_prob[:, 1]
-            comm_loss *= alive_masks.unsqueeze(-1)
+            action_loss = -advantages.contiguous().view(-1) * log_prob[:, 0]
+            action_loss *= alive_masks
+            comm_loss = -advantages.contiguous().view(-1) * log_prob[:, 1]
+            comm_loss *= alive_masks
         else:
             action_loss = -advantages.view(-1) * log_prob.squeeze()
             action_loss *= alive_masks
@@ -441,9 +362,9 @@ class Trainer(object):
 
 
         stat['loss'] = loss.item()
-        loss.backward()
+        # loss.backward()
         # (-loss).backward()
-        # (-action_loss + self.args.value_coeff * (value_loss)).backward()
+        (action_loss - comm_loss + self.args.value_coeff * (value_loss)).backward()
 
         return stat
 

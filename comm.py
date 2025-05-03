@@ -74,11 +74,20 @@ class CommNetMLP(nn.Module):
             nn.Linear(self.args.hid_size, (self.args.nagents+1) * (4)), # +9    +2+self.args.nagents+1+1
             nn.LeakyReLU()
         )
+        self.init_dim = 5  # Initial feature map size
+        self.cnndecode = nn.Sequential(
+            nn.Linear(args.hid_size*2, 32 * self.init_dim * self.init_dim),
+            nn.ReLU(inplace=True),
+            nn.Unflatten(1, (32, self.init_dim, self.init_dim)),  # → (batch, 64, 5, 5)
 
-        self.gnn_decoder = nn.Sequential(
-            nn.Linear(self.args.hid_size, self.args.hid_size),
-            nn.Linear(self.args.hid_size, (self.args.nagents+1) * (self.args.nagents+1)),
-            nn.LeakyReLU()
+            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),  # → (batch, 32, 10, 10)
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(16, 8, kernel_size=3, padding=1),  # → (batch, 16, 10, 10)
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(8, 3, kernel_size=1),  # → (batch, 3, 10, 10)
+            nn.ReLU(inplace=True)   # was nn.Sigmoid
         )
 
         # my multi-head attention model
@@ -110,21 +119,21 @@ class CommNetMLP(nn.Module):
                 nn.ReLU(),
                 nn.Linear(args.hid_size, args.hid_size),
                 )
-        '''
+        
         self.gcn_encoder = gcn_mod.GAT(2+self.args.nagents+1+1+9, 32, 16, 0.1, 0.2, 3)
         self.encoder = nn.Sequential(
-            nn.Linear( 16, args.hid_size), #16
+            nn.Linear( 16, args.hid_size),
             nn.ReLU(),
             nn.Linear(args.hid_size, args.hid_size),
-        )
-        
+        )'''
+        self.encoder = nn.Linear(num_inputs, args.hid_size)
 
         if args.recurrent:
             self.hidd_encoder = nn.Linear(args.hid_size, args.hid_size)
 
         if args.recurrent:
             self.init_hidden(args.batch_size)
-            self.f_module = nn.LSTMCell(self.hid_size*2, args.hid_size)
+            self.f_module = nn.LSTMCell(self.hid_size, args.hid_size)
             # self.f_module = nn.RNNCell(self.hid_size, args.hid_size)
 
         else:
@@ -187,7 +196,7 @@ class CommNetMLP(nn.Module):
         agent_mask = agent_mask.expand(batch_size, n, n).unsqueeze(-1)
 
         return num_agents_alive, agent_mask
-
+    '''
     def forward_state_encoder(self, x):
         hidden_state, cell_state = None, None
 
@@ -199,6 +208,25 @@ class CommNetMLP(nn.Module):
                 ck = self.gcn_encoder(x[i][0], adj[i])
                 node_fmap.append(ck[x[i][1]])
             x = torch.stack(node_fmap)
+            x = self.encoder(x)
+
+            if self.args.rnn_type == 'LSTM':
+                hidden_state, cell_state = extras
+            else:
+                hidden_state = extras
+            # hidden_state = self.tanh( self.hidd_encoder(prev_hidden_state) + x)
+        else:
+            x = self.encoder(x)
+            x = self.tanh(x)
+            hidden_state = x
+
+        return x, hidden_state, cell_state
+    '''
+    def forward_state_encoder(self, x):
+        hidden_state, cell_state = None, None
+
+        if self.args.recurrent:
+            x, extras = x
             x = self.encoder(x)
 
             if self.args.rnn_type == 'LSTM':
@@ -244,7 +272,7 @@ class CommNetMLP(nn.Module):
         #     x = self.tanh(x)
 
         x, hidden_state, cell_state = self.forward_state_encoder(x)
-        his_knowledge = hidden_state
+
         batch_size = x.size()[0]
         batch_size = 1
         n = self.nagents
@@ -285,12 +313,14 @@ class CommNetMLP(nn.Module):
                                                              1 * self.args.hid_size)
             # comm = self.W_O(context)
 
-            c = self.C_modules[i](context).squeeze()
+            c = self.C_modules[i](context).unsqueeze(0) #squeeze()
 
             if self.args.recurrent:
                 # skip connection - combine comm. matrix and encoded input for all agents
-                # inp = x + c 
-                inp = torch.cat((x, c), dim=-1)
+                inp = x + c
+
+                #inp = torch.cat((x, c), dim=-1)
+                inp = inp.view(batch_size * n, self.hid_size)
 
                 output = self.f_module(inp, (hidden_state, cell_state))
                 # output = self.f_module(inp, hidden_state)
@@ -300,8 +330,8 @@ class CommNetMLP(nn.Module):
 
                 # decoded = self.mapdecode(hidden_state)  # for map decoder original
                 node = self.mapdecode(hidden_state)
-                edge = self.gnn_decoder(hidden_state)
-                # grid = self.griddecode(hidden_state)
+                decoder_input = torch.cat((hidden_state, cell_state), 1)
+                cnn = self.cnndecode(decoder_input)
 
 
             else: # MLP|RNN
@@ -310,8 +340,9 @@ class CommNetMLP(nn.Module):
                 hidden_state = sum([x, self.f_modules[i](hidden_state), c])
                 hidden_state = self.tanh(hidden_state)
                 node = self.mapdecode(hidden_state)
-                edge = self.gnn_decoder(hidden_state)
-                grid = self.griddecode(hidden_state)
+
+                cnn = self.cnndecode(hidden_state)
+
 
         # v = torch.stack([self.value_head(hidden_state[:, i, :]) for i in range(n)])
         # v = v.view(hidden_state.size(0), n, -1)
@@ -338,13 +369,13 @@ class CommNetMLP(nn.Module):
             # will be used later to sample
             action = (action_mean, action_log_std, action_std)
         else:
-            # discrete actions
+            # discrete actionss
             action = [F.log_softmax(head(h), dim=-1) for head in self.heads]
 
         if self.args.recurrent:
-            return action, value_head, value_global, (hidden_state.clone(), cell_state.clone()), node, edge#, grid , auto_res
+            return action, value_head, value_global, (hidden_state.clone(), cell_state.clone()), node, cnn#, grid , auto_res
         else:
-            return action, value_head, value_global, node, edge #, grid
+            return action, value_head, value_global, node, cnn #, grid
 
     def init_weights(self, m):
         if type(m) == nn.Linear:
