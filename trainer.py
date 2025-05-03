@@ -41,7 +41,7 @@ class Trainer(object):
         self.env = env
         self.display = False
         self.last_step = False
-        self.optimizer = optim.RMSprop(policy_net.parameters(),
+        self.optimizer = optim.RMSprop(filter(lambda p: p.requires_grad, policy_net.parameters()),
             lr = args.lrate, alpha=0.97, eps=1e-6)
         self.params = [p for p in self.policy_net.parameters()]
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=40000, gamma=1)
@@ -211,10 +211,10 @@ class Trainer(object):
         ng = self.args.obstacles
         batch_size = len(batch.state)
 
-        rewards = torch.Tensor(batch.reward)
-        episode_masks = torch.Tensor(batch.episode_mask)
-        episode_mini_masks = torch.Tensor(batch.episode_mini_mask)
-        actions = torch.Tensor(batch.action)
+        rewards = torch.Tensor(np.array(batch.reward))
+        episode_masks = torch.Tensor(np.array(batch.episode_mask))
+        episode_mini_masks = torch.Tensor(np.array(batch.episode_mini_mask))
+        actions = torch.Tensor(np.array(batch.action))
         actions = actions.transpose(1, 2).view(-1, n, dim_actions)
         '''
         rewards = rewards.to(self.device)
@@ -303,8 +303,8 @@ class Trainer(object):
             action_means, action_log_stds, action_stds = action_out
             log_prob = normal_log_density(actions, action_means, action_log_stds, action_stds)
         else:
-            log_p_a = [action_out[i].view(-1, num_actions[i]) for i in range(dim_actions)]
-            actions = actions.contiguous().view(-1, dim_actions)
+            log_p_a = [action_out[i].view(-1, num_actions[i]) for i in range(dim_actions)] # [(B * N, A), (B * N, C)] A: aciton space, C: communication space
+            actions = actions.contiguous().view(-1, dim_actions) # (B * N, 2)
 
             if self.args.advantages_per_action:
                 log_prob = multinomials_log_densities(actions, log_p_a)
@@ -313,10 +313,9 @@ class Trainer(object):
 
 
         if self.args.advantages_per_action:
-            # action_loss = -advantages.view(-1).unsqueeze(-1) * log_prob
-            action_loss = -advantages.view(-1) * log_prob[:, 0]
+            action_loss = -advantages.contiguous().view(-1) * log_prob[:, 0]
             action_loss *= alive_masks
-            comm_loss = -advantages.view(-1) * log_prob[:, 1]
+            comm_loss = -advantages.contiguous().view(-1) * log_prob[:, 1]
             comm_loss *= alive_masks
         else:
             action_loss = -advantages.view(-1) * log_prob.squeeze()
@@ -324,8 +323,9 @@ class Trainer(object):
 
         action_loss = action_loss.sum()
         stat['action_loss'] = action_loss.item()
-        # comm_loss = comm_loss.sum()
-        # stat['comm_loss'] = comm_loss.item()
+        if self.args.advantages_per_action:
+            comm_loss = comm_loss.sum()
+            stat['comm_loss'] = comm_loss.item()
 
         # value loss term
         targets = returns
@@ -345,8 +345,10 @@ class Trainer(object):
 
         map_loss = (map_loss_m0 ) # Feb setting  +n+1+9   +ng +ng     /(n+1)**2     /((n+1)*(2))  /n
         stat['map_loss'] = (map_loss).item()
-        loss = action_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss +  self.args.value_coeff/self.args.nagents * (cnn_loss)#/n
-        # loss = action_loss + comm_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss
+        if self.args.advantages_per_action:
+            loss = action_loss + comm_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
+        else:
+            loss = action_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
 
 
         if not self.args.continuous:
@@ -362,7 +364,7 @@ class Trainer(object):
         stat['loss'] = loss.item()
         # loss.backward()
         # (-loss).backward()
-        # (action_loss - comm_loss + self.args.value_coeff * (value_loss)).backward()
+        (action_loss - comm_loss + self.args.value_coeff * (value_loss)).backward()
 
         return stat
 
