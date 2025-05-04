@@ -357,15 +357,15 @@ if args.load != '':
 for param in policy_net.parameters():
     param.requires_grad = False
 # 解冻 Communication policy heads[1] 的参数
-for param in policy_net.heads[1].parameters():
-    param.requires_grad = True
+# for param in policy_net.heads[1].parameters():
+    # param.requires_grad = True
 # 解冻 Action policy heads[0] 的参数
-for param in policy_net.heads[0].parameters():
-    param.requires_grad = True
-for param in policy_net.value_global.parameters():
-    param.requires_grad = True
-for name, param in policy_net.named_parameters():
-    print(f"{name}: {param.requires_grad}")
+# for param in policy_net.heads[0].parameters():
+    # param.requires_grad = True
+# for param in policy_net.value_global.parameters():
+    # param.requires_grad = True
+# for name, param in policy_net.named_parameters():
+    # print(f"{name}: {param.requires_grad}")
 # exit()
 
 run(args.num_epochs)
