@@ -362,7 +362,7 @@ class Trainer(object):
 
 
         stat['loss'] = loss.item()
-        # loss.backward()
+        loss.backward()
         # (-loss).backward()
         # (action_loss - comm_loss + self.args.value_coeff * (value_loss)).backward()
 

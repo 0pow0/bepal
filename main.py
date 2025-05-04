@@ -355,7 +355,7 @@ if args.load != '':
 
 # freeze all layers
 for param in policy_net.parameters():
-    param.requires_grad = False
+    param.requires_grad = True 
 # 解冻 Communication policy heads[1] 的参数
 # for param in policy_net.heads[1].parameters():
     # param.requires_grad = True
