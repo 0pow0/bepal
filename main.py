@@ -116,6 +116,9 @@ parser.add_argument('--wandb_run', type=str, default='debug',
 parser.add_argument('--comm_baseline_path', type=str, default=None,
                    help='Unlearned policy ckpt path w/o communication')
 
+parser.add_argument('--objective', choices=['original', 'unlearn', 'advantage_baseline'], default='original',
+                    type=str, help='type of objectives to use')
+
 init_args_for_env(parser)
 args = parser.parse_args()
 
@@ -178,9 +181,11 @@ print(args, flush=True)
 
 if args.commnet:
     policy_net = CommNetMLP(args, num_inputs)#.to(device)
-    wocomm_baseline = CommNetMLP(args, num_inputs)
-    d = torch.load(args.comm_baseline_path)
-    wocomm_baseline.load_state_dict(d['policy_net'])
+    wocomm_baseline = None
+    if args.objective == "advantage_baseline":
+        wocomm_baseline = CommNetMLP(args, num_inputs)
+        d = torch.load(args.comm_baseline_path)
+        wocomm_baseline.load_state_dict(d['policy_net'])
      
      # d = torch.load('/home/qhuang/ppgcn/result/gcn_ppnode_agent_node_obs_12k_5994')
      # d = torch.load('/home/qhuang/decoder/result/model_tmc+map_7992')
@@ -360,27 +365,32 @@ signal.signal(signal.SIGINT, signal_handler)
 if args.load != '':
     load(args.load)
 
-# freeze all layers
-# for param in policy_net.parameters():
-    # param.requires_grad = False
-
-# 解冻 heads[1] 的参数
-# for param in policy_net.heads[0].parameters():
-    # param.requires_grad = False 
-# for param in policy_net.value_head.parameters():
-    # param.requires_grad = True
-
-# freeze all layers of w/o communication policy
-for param in wocomm_baseline.parameters():
-    param.requires_grad = False
+if args.objective == "original":
+    for param in policy_net.parameters():
+        param.requires_grad = True
+else:
+    for param in policy_net.parameters():
+        param.requires_grad = False
+    # 解冻 heads[0] 的参数
+    for param in policy_net.heads[0].parameters():
+        param.requires_grad = True 
+    for param in policy_net.heads[1].parameters():
+        param.requires_grad = True 
+    for param in policy_net.value_head.parameters():
+        param.requires_grad = True
 
 print("Policy parameters:")
 for name, param in policy_net.named_parameters():
     print(f"{name}: {param.requires_grad}")
 
-print("\nW/o comm baseline parameters:")
-for name, param in wocomm_baseline.named_parameters():
-    print(f"{name}: {param.requires_grad}")
+if args.objective == "advantage_baseline":
+    # freeze all layers of w/o communication policy
+    for param in wocomm_baseline.parameters():
+        param.requires_grad = False
+
+    print("\nW/o comm baseline parameters:")
+    for name, param in wocomm_baseline.named_parameters():
+        print(f"{name}: {param.requires_grad}")
 
 run(args.num_epochs)
 if args.display:
