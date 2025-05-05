@@ -9,7 +9,7 @@ from utils import *
 from action_utils import *
 
 Transition = namedtuple('Transition', ('state', 'action', 'action_out', 'value', 'value_global', 'episode_mask', 'episode_mini_mask', 'next_state',
-                                       'reward', 'misc', 'node_ground_truthg', 'location', 'node_decoded', 'gt_info', 'cnn_decoded'))#'l0','l1','l2''maploss' 'grid_maploss',
+                                       'reward', 'misc', 'node_ground_truthg', 'location', 'node_decoded', 'gt_info', 'cnn_decoded', 'wocomm_value', 'next_wocomm_value'))#'l0','l1','l2''maploss' 'grid_maploss',
 
 '''
 Dyanamic Graph version trainer
@@ -35,7 +35,7 @@ def downsample_map(map_tensor, target_size=10):
 
 
 class Trainer(object):
-    def __init__(self, args, policy_net,  env):
+    def __init__(self, args, policy_net,  env, wocomm_baseline=None):
         self.args = args
         self.policy_net = policy_net
         self.env = env
@@ -46,6 +46,20 @@ class Trainer(object):
         self.params = [p for p in self.policy_net.parameters()]
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=40000, gamma=1)
         #self.device = torch.device('cpu') #'cuda:0' if torch.cuda.is_available else
+
+        # add unlearned value baseline for w/o communication scenario
+        self.wocomm_baseline = wocomm_baseline
+
+    def blur(self, gt, decode):
+        for i in range(self.args.nagents):
+            for j in range(self.args.nagents+1):
+                x = abs(gt[i][j][0] - decode[i][j][0])
+                y = abs(gt[i][j][1] - decode[i][j][1])
+                if x+y <= 2:
+                #if x <= self.env.env.vision / (self.env.env.dim -1) and y <= self.env.env.vision / (self.env.env.dim -1):
+                    gt[i][j][0] = decode[i][j][0]
+                    gt[i][j][1] = decode[i][j][1]
+        return gt
 
     
     def ground_truth_gen(self, env):
@@ -117,6 +131,11 @@ class Trainer(object):
                 x = [state, prev_hid]
                 action_out, value, value_global, prev_hid, node_decoded, cnn_decoded = self.policy_net(x, info) #, grid_decoded
 
+                # state value w/o comm
+                wocomm_value = None
+                if self.args.objective == "advantage_baseline" and self.wocomm_baseline != None:
+                    wocomm_value = self.wocomm_baseline(x, info)[1] #, grid_decoded
+
                 if (t + 1) % self.args.detach_gap == 0:
                     if self.args.rnn_type == 'LSTM':
                         prev_hid = (prev_hid[0].detach(), prev_hid[1].detach())
@@ -148,6 +167,11 @@ class Trainer(object):
                 if hasattr(self.args, 'enemy_comm') and self.args.enemy_comm:
                     stat['enemy_comm']  = stat.get('enemy_comm', 0)  + info['comm_action'][self.args.nfriendly:]
 
+            # next state value w/o comm
+            next_x = [next_state, prev_hid]
+            next_wocomm_value = None
+            if self.args.objective == "advantage_baseline" and self.wocomm_baseline != None:
+                next_wocomm_value = self.wocomm_baseline(next_x, info)[1]
 
             if 'alive_mask' in info:
                 misc['alive_mask'] = info['alive_mask'].reshape(reward.shape)
@@ -176,7 +200,8 @@ class Trainer(object):
                 self.env.display()
 
 
-            trans = Transition(state, action, action_out, value, value_global, episode_mask, episode_mini_mask, next_state, reward, misc, node_ground_truthg,  location, node_decoded, gt_info, cnn_decoded)
+            trans = Transition(state, action, action_out, value, value_global, episode_mask, episode_mini_mask, next_state, reward, misc, node_ground_truthg,  location, node_decoded, gt_info, cnn_decoded,
+                               wocomm_value, next_wocomm_value)
             # trans = Transition(state, action, action_out, value, episode_mask, episode_mini_mask, next_state, reward, misc, maploss) grid_maploss,
 
             episode.append(trans)
@@ -296,6 +321,12 @@ class Trainer(object):
 
         map_loss_m0 = node_maploss
 
+        if self.args.objective == "advantage_baseline":
+            wocomm_values = torch.cat(batch.wocomm_value, dim=0).view(batch_size, n)
+            next_wocomm_values = torch.cat(batch.next_wocomm_value, dim=0).view(batch_size, n)
+            wocomm_td_target = rewards + self.args.gamma * next_wocomm_values * episode_masks
+            wocomm_td_delta = wocomm_td_target - wocomm_values
+
         if self.args.normalize_rewards:
             advantages = (advantages - advantages.mean()) / advantages.std()
 
@@ -303,8 +334,8 @@ class Trainer(object):
             action_means, action_log_stds, action_stds = action_out
             log_prob = normal_log_density(actions, action_means, action_log_stds, action_stds)
         else:
-            log_p_a = [action_out[i].view(-1, num_actions[i]) for i in range(dim_actions)] # [(B * N, A), (B * N, C)] A: aciton space, C: communication space
-            actions = actions.contiguous().view(-1, dim_actions) # (B * N, 2)
+            log_p_a = [action_out[i].view(-1, num_actions[i]) for i in range(dim_actions)] # [(B * N, A), (B * A, C)] A: aciton space, C: communication space # [(B * N, A), (B * N, C)] A: aciton space, C: communication space
+            actions = actions.contiguous().view(-1, dim_actions) # (B * N, 2) # (B * N, 2)
 
             if self.args.advantages_per_action:
                 log_prob = multinomials_log_densities(actions, log_p_a)
@@ -313,18 +344,27 @@ class Trainer(object):
 
 
         if self.args.advantages_per_action:
-            action_loss = -advantages.contiguous().view(-1) * log_prob[:, 0]
-            action_loss *= alive_masks
-            comm_loss = -advantages.contiguous().view(-1) * log_prob[:, 1]
-            comm_loss *= alive_masks
+            if self.args.objective == "unlearn":
+                action_loss = -advantages.contiguous().view(-1) * log_prob[:, 0]
+                action_loss *= alive_masks
+                comm_loss = -advantages.contiguous().view(-1) * log_prob[:, 1]
+                comm_loss *= alive_masks
+            elif self.args.objective == "advantage_baseline":
+                action_loss = -wocomm_td_delta.contiguous().view(-1) * log_prob[:, 0]
+                action_loss *= alive_masks
+                comm_loss = -(advantages - wocomm_td_delta).contiguous().view(-1) * log_prob[:, 1]
+                comm_loss *= alive_masks
+            else:
+                raise NotImplementedError("Advantages per action not implemented for other objectives")
         else:
             action_loss = -advantages.view(-1) * log_prob.squeeze()
             action_loss *= alive_masks
 
         action_loss = action_loss.sum()
         stat['action_loss'] = action_loss.item()
-        if self.args.advantages_per_action:
-            comm_loss = comm_loss.sum()
+
+        if self.args.objective in ["advantage_baseline", "unlearn"]:
+            comm_loss = comm_loss.mean()
             stat['comm_loss'] = comm_loss.item()
 
         # value loss term
@@ -345,10 +385,15 @@ class Trainer(object):
 
         map_loss = (map_loss_m0 ) # Feb setting  +n+1+9   +ng +ng     /(n+1)**2     /((n+1)*(2))  /n
         stat['map_loss'] = (map_loss).item()
-        if self.args.advantages_per_action:
+        
+        if self.args.objective == "original":
+            loss = action_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
+        elif self.args.objective == "unlearn":
+            loss = action_loss - comm_loss + self.args.value_coeff * (value_loss)
+        elif self.args.objective == "advantage_baseline":
             loss = action_loss + comm_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
         else:
-            loss = action_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
+            raise RuntimeError("Supported objectives are 'original', 'unlearn' and 'advantage_baseline', should be passed via --objective")
 
 
         if not self.args.continuous:
@@ -362,9 +407,7 @@ class Trainer(object):
 
 
         stat['loss'] = loss.item()
-        # loss.backward()
-        # (-loss).backward()
-        (action_loss - comm_loss + self.args.value_coeff * (value_loss)).backward()
+        loss.backward()
 
         return stat
 
