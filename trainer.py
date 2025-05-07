@@ -350,7 +350,7 @@ class Trainer(object):
                 comm_loss = -advantages.contiguous().view(-1) * log_prob[:, 1]
                 comm_loss *= alive_masks
             elif self.args.objective == "advantage_baseline":
-                action_loss = -wocomm_td_delta.contiguous().view(-1) * log_prob[:, 0]
+                action_loss = -advantages.contiguous().view(-1) * log_prob[:, 0]
                 action_loss *= alive_masks
                 comm_loss = -(advantages - wocomm_td_delta).contiguous().view(-1) * log_prob[:, 1]
                 comm_loss *= alive_masks
