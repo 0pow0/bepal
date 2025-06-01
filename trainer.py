@@ -288,8 +288,8 @@ class Trainer(object):
         map_gt_info = torch.stack(batch.gt_info)
         real_gt = torch.cat(
             [map_gt_info[:, 0:1, :, :].unsqueeze(1).expand(rewards.size(0), n, 1, self.args.dim, self.args.dim),
-             map_gt_info[:, 1:6, :, :].view(rewards.size(0), n, 1, self.args.dim, self.args.dim),
-             map_gt_info[:, 6:, :, :].view(rewards.size(0), n, 1, self.args.dim, self.args.dim)], dim=2)
+             map_gt_info[:, 1:n+1, :, :].view(rewards.size(0), n, 1, self.args.dim, self.args.dim),
+             map_gt_info[:, n+1:, :, :].view(rewards.size(0), n, 1, self.args.dim, self.args.dim)], dim=2)
         final_gt_downsampled = downsample_map(real_gt, target_size=10)
         layerwise_loss = F.mse_loss(cnn_decoded, final_gt_downsampled, reduction='none')
         cnn_loss = layerwise_loss.sum()
