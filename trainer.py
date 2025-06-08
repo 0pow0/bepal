@@ -389,7 +389,7 @@ class Trainer(object):
         if self.args.objective == "original":
             loss = action_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
         elif self.args.objective == "unlearn":
-            loss = action_loss - comm_loss + self.args.value_coeff * (value_loss)
+            loss = action_loss - comm_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
         elif self.args.objective == "advantage_baseline":
             loss = action_loss + comm_loss + self.args.value_coeff * (value_loss) + self.args.value_coeff/self.args.nagents * (value_loss_g) + 0.5*map_loss #/n
         else:
